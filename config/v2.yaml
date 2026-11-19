@@ -152,8 +152,8 @@ batching:                                # defaults; `--v2 --smoke` auto-tunes a
   grad_batch_tokens: 4096
   ce_batch_tokens: 2048                  # full-vocabulary logits (SAE loss check): ~2 GB fp32 per 2k tokens at V=248k
   gen_batch_size: 128
-  memory_cap_gb: 100
-  tune_candidates_tokens: [8192, 16384, 32768, 65536, 131072]
+  memory_cap_gb: 60                      # shared GB10: other users hold ~25-45 GB; 100 tripped the watchdog
+  tune_candidates_tokens: [8192, 16384, 32768, 65536]   # 131072 removed: backward probe at 32k overflowed the shared GB10
   tune_candidates_gen: [32, 64, 128, 256, 512]
 keep_models_loaded: true                 # both models fit easily in 128 GB; avoids reloading between blocks
 fast_path: true                          # reuse layers 0..L (equivalence-tested per model and depth)

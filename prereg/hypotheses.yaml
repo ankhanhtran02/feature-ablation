@@ -3,7 +3,7 @@
 # `bash run_pilot.sh --v2 --freeze`. analysis_v2.py reads every threshold below; nothing is duplicated in code.
 
 title: "Causal vs readout unit selection across bases: v2 confirmatory test"
-status: draft                       # set to `final` before freezing
+status: final                       # set to `final` before freezing
 authors: []                         # fill in
 date_drafted: "2026-11-19"
 

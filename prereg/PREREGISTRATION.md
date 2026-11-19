@@ -1,6 +1,6 @@
 # Causal vs readout unit selection across bases: v2 confirmatory test
 
-Status: **draft** · drafted 2026-11-19
+Status: **final** · drafted 2026-11-19
 
 Generated from `prereg/hypotheses.yaml` by `bash run_pilot.sh --v2 --render-prereg`; do not edit by hand.
 

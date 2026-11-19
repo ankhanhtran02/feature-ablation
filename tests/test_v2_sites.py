@@ -102,6 +102,17 @@ def test_s1_passes_decode_steps_and_s2_edits_them():
         hook(None, None, torch.randn(2, 2, d))                      # unexpected length
 
 
+def _device(arch) -> str:
+    """Qwen3.5's Gated DeltaNet uses the fla Triton kernels whenever fla is importable, and those run only on CUDA:
+    on such a machine (the GB10) the tiny Qwen3.5 runs on the GPU; everywhere else on the CPU."""
+    if arch == "qwen3_5" and torch.cuda.is_available():
+        import importlib.util
+
+        if importlib.util.find_spec("fla") is not None:
+            return "cuda"
+    return "cpu"
+
+
 def _tiny(arch):
     if arch == "qwen3":
         from transformers import Qwen3Config, Qwen3ForCausalLM
@@ -123,16 +134,17 @@ def _tiny(arch):
 @pytest.mark.parametrize("arch", ["qwen3", "qwen3_5"])
 def test_decode_cache_consistency_under_s2(arch):
     """Edits at decode steps flow into the KV / recurrent cache exactly as a full recomputation would."""
-    model = _tiny(arch)
+    dev = _device(arch)
+    model = _tiny(arch).to(dev)
     model.requires_grad_(False)
     layers = M.decoder_layers(model)
     L = 1
     g = torch.Generator().manual_seed(5)
     toks = [torch.randint(3, 97, (n,), generator=g).tolist() for n in (7, 11, 9)]
-    batch = M.make_batches(toks, 0, "cpu", 16, 10**6)[0]
-    basis = BZ.DimsBasis(32, "cpu")
+    batch = M.make_batches(toks, 0, dev, 16, 10**6)[0]
+    basis = BZ.DimsBasis(32, dev)
     units = np.arange(0, 32, 3)
-    vals = ST.MeanValues(torch.randn(len(units), generator=g), torch.randn(len(units), generator=g) * 3)
+    vals = ST.MeanValues(torch.randn(len(units), generator=g).to(dev), (torch.randn(len(units), generator=g) * 3).to(dev))
     n_new = 6
     hook = _hook(basis, units, vals, site="S2")
     pm, pos, _, _ = ST.role_masks(batch)
@@ -148,7 +160,7 @@ def test_decode_cache_consistency_under_s2(arch):
     assert hook.n_edit[ST.GEN] == len(toks) * (n_new - 1)
     seqs = [toks[int(i)] + new[r].tolist() for r, i in enumerate(batch.idx)]
     plen = np.array([len(toks[int(i)]) for i in batch.idx])
-    b2 = M.make_batches(seqs, 0, "cpu", 16, 10**6)[0]
+    b2 = M.make_batches(seqs, 0, dev, 16, 10**6)[0]
     plen2 = np.array([len(toks[int(i)]) for i in np.asarray(batch.idx)[b2.idx]])
     h2 = _hook(basis, units, vals, site="S2")
     pm2, pos2, gm2, gs2 = ST.role_masks(b2, plen2)

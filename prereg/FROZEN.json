@@ -1,0 +1,12 @@
+{
+  "files": {
+    "prereg/hypotheses.yaml": "2fa7c6ebfc21128a885c295f1b24fdfc171057f948ce1198b511811e3b4eace1",
+    "prereg/PREREGISTRATION.md": "de056cf8c45ff784bcd0e724db8fc8bd1744d161c57771021f5a8704ca525998",
+    "config/v2.yaml": "6afd68d84950e2b7e8648613fb28af343df6056e11f37bc63f079dd36ce4e167",
+    "src/pilot/analysis_v2.py": "8dd6cff53ea63ecbe26c55b6be53dcce272ee3284dda4859f2dc9cd6ef0d4dfa",
+    "src/pilot/stats.py": "3129ff6fd3020d1df06a29345d077971579cdbce5c71f41ef8b80adba76d7351"
+  },
+  "git_commit": "df6dcbac9436d8ef55c6d73baa111120423fce41",
+  "utc": "2026-11-19T06:18:19Z",
+  "tag": "prereg-v2-frozen"
+}

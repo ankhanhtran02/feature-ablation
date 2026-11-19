@@ -39,6 +39,48 @@ def _sync():
         torch.cuda.synchronize()
 
 
+class _MemGuard:
+    """Decides, before a tuning candidate runs, whether its predicted peak fits.
+
+    The fixed cap alone is checked only after a candidate has run, so one oversized candidate can take a shared
+    unified-memory machine (GB10) below the watchdog threshold. Here the next peak is extrapolated linearly in
+    batch size from the last measured candidate (peak memory above the resident baseline grows ~linearly), times
+    a safety factor, and compared with the tighter of the configured cap and what the machine can still give:
+    memory torch already holds + MemAvailable - watchdog threshold - margin.
+    """
+
+    def __init__(self, cap_gb: float, watchdog_gb: float, margin_gb: float = 4.0, safety: float = 1.25):
+        self.cap, self.watchdog, self.margin, self.safety = cap_gb, watchdog_gb, margin_gb, safety
+        self.base = 0.0
+
+    @staticmethod
+    def _held_gb() -> float:
+        return torch.cuda.memory_allocated() / 1024**3 if torch.cuda.is_available() else 0.0
+
+    def start_ladder(self):
+        _reset()
+        self.base = self._held_gb()                       # weights and other resident tensors
+
+    def budget_gb(self) -> float:
+        from .memory import mem_available_gb
+
+        avail = mem_available_gb()
+        if avail <= 0:                                    # no /proc/meminfo (not Linux): fixed cap only
+            return self.cap
+        return min(self.cap, self._held_gb() + avail - self.watchdog - self.margin)
+
+    def check(self, prev: dict | None, size_key: str, size: int, what: str) -> dict | None:
+        """None when the candidate may run; otherwise a 'skipped' record for the tuning file."""
+        if prev is None or not prev.get(size_key):
+            return None
+        pred = self.base + max(prev["peak_gb"] - self.base, 0.0) * size / prev[size_key] * self.safety
+        budget = self.budget_gb()
+        if pred <= budget:
+            return None
+        LOG.info("tune %s: skip %s=%d (predicted peak %.1f GB > budget %.1f GB)", what, size_key, size, pred, budget)
+        return {size_key: int(size), "skipped": True, "predicted_gb": round(pred, 2), "budget_gb": round(budget, 2)}
+
+
 def _batch_of(mc, tokens: int, src: list[list[int]]):
     lens = [len(t) for t in src]
     L = int(np.median(lens))
@@ -56,10 +98,18 @@ def tune_model(mc) -> dict:
     model = mc.model
     out = {"device": str(mc.run.device), "memory_cap_gb": cap, "tuned_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
            "forward": [], "backward": [], "generate": []}
+    from .memory import effective_threshold_gb
+
+    guard = _MemGuard(cap, effective_threshold_gb(float(cfg["memory"]["watchdog_min_available_gb"]))[0])
     # forward (scoring / cost passes)
     best = None
+    guard.start_ladder()
     for tok_n in bc["tune_candidates_tokens"]:
         b = _batch_of(mc, int(tok_n), src)
+        skip = guard.check(best, "tokens", b.n_tokens, "forward")
+        if skip:
+            out["forward"].append(skip)
+            break
         _reset()
         try:
             with torch.inference_mode():
@@ -86,8 +136,13 @@ def tune_model(mc) -> dict:
     from .sites import GradCapture
 
     bestg = None
+    guard.start_ladder()
     for tok_n in [x // 4 for x in bc["tune_candidates_tokens"]]:
         b = _batch_of(mc, int(tok_n), src)
+        skip = guard.check(bestg, "tokens", b.n_tokens, "backward")
+        if skip:
+            out["backward"].append(skip)
+            break
         _reset()
         try:
             gc = GradCapture(mc.layers, Ls)
@@ -113,7 +168,12 @@ def tune_model(mc) -> dict:
     # generation (refusal damage): time per call with 4 and 16 new tokens -> fixed + per-step cost
     gsrc = [list(x) for x in mc.tokenized("refusal", "eval_harmless").input_ids] if "refusal" in _tasks(cfg) else src
     bestgen = None
+    guard.start_ladder()
     for bs in bc["tune_candidates_gen"]:
+        skip = guard.check(bestgen, "batch", int(bs), "generation")
+        if skip:
+            out["generate"].append(skip)
+            break
         b = M.make_batches([gsrc[i % len(gsrc)] for i in range(int(bs))], mc.tok.pad_token_id, mc.run.device, 10**6, 10**9)[0]
         _reset()
         try:

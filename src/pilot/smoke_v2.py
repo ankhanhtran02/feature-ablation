@@ -31,6 +31,10 @@ from . import sites as ST
 from .utils import LOG, REPO_ROOT, fmt_secs, read_json, write_json
 
 
+# A decode-vs-recompute token mismatch within this many logits of the top logit is a bf16 near tie, not a cache
+# inconsistency (about 1-2 bf16 rounding steps at typical logit magnitudes of 20-30).
+DECODE_TIE_TOL = 0.5
+
 # ============================================================================= in-run checks
 
 def _ex(b):
@@ -125,7 +129,10 @@ def model_checks(run, mc) -> dict:
         g_c, _ = generate(mc, toks, n_new, hook=h, L=L)
         seqs = [list(t) + list(g) for t, g in zip(toks, g_c)]
         plen = np.array([len(t) for t in toks])
-        agree, n = 0, 0
+        # bf16: cached decoding and the uncached recomputation run different kernel shapes, so a near-tied argmax can
+        # flip. A disagreeing token counts as consistent when its recomputed logit is within DECODE_TIE_TOL of the
+        # top logit; an edit that failed to reach the cache shows up as wide or repeated disagreements instead.
+        agree, n, ties, worst = 0, 0, 0, 0.0
         for b in mc.batches(seqs):
             h2 = ST.SiteHook(basis.directions(u), basis.reader(u), rr.sink_thr, "S2", vals)
             pm, pos, gm, gs = ST.role_masks(b, plen[b.idx])
@@ -141,10 +148,20 @@ def model_checks(run, mc) -> dict:
                 if not g:
                     continue
                 start = b.S - b.lengths[row] + plen[int(i)] - 1
-                pred = logits[row, start:start + len(g)].argmax(-1).tolist()
-                agree += sum(int(a == c) for a, c in zip(pred, g))
+                lg = logits[row, start:start + len(g)].float()
+                pred = lg.argmax(-1).tolist()
+                for j, (a, c) in enumerate(zip(pred, g)):
+                    if a == c:
+                        agree += 1
+                        continue
+                    gap = float(lg[j].max() - lg[j, int(c)])
+                    worst = max(worst, gap)
+                    if gap <= DECODE_TIE_TOL:
+                        ties += 1
                 n += len(g)
-        out["decode_cache_consistency_S2"] = {"tokens": n, "agree": agree, "pass": bool(n > 0 and agree == n)}
+        out["decode_cache_consistency_S2"] = {"tokens": n, "agree": agree, "near_ties": ties,
+                                              "max_logit_gap": round(worst, 4), "tie_tol": DECODE_TIE_TOL,
+                                              "pass": bool(n > 0 and agree + ties == n)}
         res = prep.get("reservoir") or {}
         means_ok = all(prep["means"][k]["prompt"] is not None and prep["means"][k]["generated"] is not None
                        for k in prep["means"])

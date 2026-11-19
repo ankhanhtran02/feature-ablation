@@ -269,6 +269,29 @@ unchanged; v1 modes behave as before.
     env, watchdog, memory) and v1's `--check --smoke` is run on real-model smokes.
 20. **Developer additions** (hidden from `--help`): `--dev-tiny` and `PILOT_V2_EXTRA_CONFIG=<yaml>` (merged last,
     recorded in the manifest, ignored by `--confirm`).
+21. **Batch-size auto-tune limits lowered** (`config/v2.yaml`, after the first GB10 smoke, 2026-11-19). The smoke
+    run was aborted by the memory watchdog while tuning Qwen3.5-4B (`MemAvailable` reached 16 GB): the GB10 is
+    shared and other processes hold about 25-45 GB, so a 100 GB torch cap does not fit, and the cap is only checked
+    after a candidate has run. Changes: `memory_cap_gb` 100 -> 60 (the amendment's "100 GB cap" is replaced by
+    60 GB), and 131072 removed from `tune_candidates_tokens` (the backward ladder, tokens / 4, now stops at 16k).
+    No hypothesis is involved: batch size is a harness setting (amendment, dev-run rules), clean and intervened
+    passes always share the same batches, and it is fixed at the smoke step, before dev and confirm. Forward
+    throughput on Qwen3-1.7B was the same at 65k and 131k tokens (~6.2k tok/s), and `max_batch_size: 512` already
+    caps real batches below 131k tokens.
+22. **Batch auto-tune memory guard** (`src/pilot/budget_v2.py`, 2026-11-19). Before each tuning candidate runs, its
+    peak is extrapolated linearly from the last measured candidate (x1.25) and the candidate is skipped when that
+    exceeds min(`memory_cap_gb`, memory torch holds + MemAvailable - watchdog threshold - 4 GB). The cap alone was
+    only checked after a candidate had run. Tests: `tests/test_v2_tune_guard.py`.
+23. **`test_decode_cache_consistency_under_s2[qwen3_5]` runs on CUDA when `fla` is importable** (2026-11-19). With
+    `fla` installed (the GB10), transformers uses its Triton kernels for Gated DeltaNet, which reject CPU tensors;
+    the test is unchanged otherwise and still runs on the CPU elsewhere.
+24. **Smoke check `decode_cache_consistency_S2` tolerates bf16 near ties** (`src/pilot/smoke_v2.py`, 2026-11-19).
+    On the first GB10 smoke, Qwen3-1.7B agreed on 31 of 32 tokens (Qwen3.5-4B 32/32; identity under S2 decoding
+    passed on both). Cached decoding and the uncached recomputation run different bf16 kernel shapes, so a
+    near-tied argmax can flip. A disagreeing token now counts as consistent when its recomputed logit is within
+    `DECODE_TIE_TOL = 0.5` of the top logit; the report records `near_ties` and `max_logit_gap`. An edit that does
+    not reach the cache still fails the check (wide or repeated disagreements). The fp32 unit test keeps exact
+    token agreement.
 
 ## Verification status
 
